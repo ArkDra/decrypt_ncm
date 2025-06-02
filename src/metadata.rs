@@ -28,7 +28,14 @@ pub fn process_artist(meta_data: &Value) -> String {
 }
 
 pub fn add_meta_info(output_path: &str, meta_data: &Value, cover_data: Vec<u8>) {
-    let tag_type = TagType::VorbisComments;
+    let tag_type = match meta_data["format"].as_str().unwrap() {
+        "flac" => TagType::VorbisComments,
+        "mp3" => TagType::Id3v2,
+        _ => {
+            eprint!("仅支持flac和mp3格式文件添加元数据！");
+            return;
+        }
+    };
     let mut tag = Tag::new(tag_type);
 
     let music_name = meta_data["musicName"].as_str().unwrap();
