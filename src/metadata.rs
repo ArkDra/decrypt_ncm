@@ -1,9 +1,10 @@
 use lofty::{
     config::WriteOptions,
-    picture::{MimeType, Picture, PictureType},
+    picture::{Picture, PictureType},
     tag::{Accessor, Tag, TagExt, TagType},
 };
 use serde_json::Value;
+use std::io::BufReader;
 
 pub fn process_artist(meta_data: &Value) -> String {
     let mut artists = String::new();
@@ -43,12 +44,10 @@ pub fn add_meta_info(output_path: &str, meta_data: &Value, cover_data: Vec<u8>) 
     let artist = process_artist(&meta_data);
     let artist = artist.as_str();
 
-    let cover = Picture::new_unchecked(
-        PictureType::CoverFront,
-        Some(MimeType::Jpeg),
-        None,
-        cover_data,
-    );
+    let mut cover_buf = BufReader::new(cover_data.as_slice());
+    let mut cover = Picture::from_reader(&mut cover_buf).unwrap();
+    cover.set_pic_type(PictureType::CoverFront);
+
     tag.push_picture(cover);
     tag.set_title(music_name.to_string());
     tag.set_artist(artist.to_string());
