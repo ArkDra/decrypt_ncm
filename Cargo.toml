@@ -12,6 +12,7 @@ debug = false
 lto = true
 
 [dependencies]
+anyhow = "1.0"
 aes = "0.8.4"
 base64 = "0.22.1"
 ecb = "0.1.2"

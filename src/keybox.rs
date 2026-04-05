@@ -1,26 +1,31 @@
-use rayon::{iter::{ParallelIterator}, slice::ParallelSliceMut};
+﻿use anyhow::{bail, Result};
+use rayon::{iter::ParallelIterator, slice::ParallelSliceMut};
 
 pub struct KeyBox {
     box_data: [u8; 256],
 }
 
 impl KeyBox {
-    pub fn new(key_data: &[u8]) -> Self {
+    pub fn new(key_data: &[u8]) -> Result<Self> {
+        if key_data.is_empty() {
+            bail!("key data is empty");
+        }
+
         let mut key_box: [u8; 256] = std::array::from_fn(|i| i as u8);
         let mut last_byte: u8 = 0;
-        let mut key_offset: u8 = 0;
+        let mut key_offset: usize = 0;
 
         for i in 0..256 {
             let c: u8 = key_box[i]
                 .wrapping_add(last_byte)
-                .wrapping_add(key_data[key_offset as usize]);
-            key_offset = (key_offset + 1) % key_data.len() as u8;
+                .wrapping_add(key_data[key_offset]);
+            key_offset = (key_offset + 1) % key_data.len();
 
             key_box.swap(i, c as usize);
             last_byte = c;
         }
 
-        KeyBox { box_data: key_box }
+        Ok(KeyBox { box_data: key_box })
     }
 
     pub fn apply_keystream(&self, data: Vec<u8>) -> Vec<u8> {

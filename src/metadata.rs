@@ -1,3 +1,4 @@
+﻿use anyhow::{bail, Context, Result};
 use lofty::{
     config::WriteOptions,
     picture::{Picture, PictureType},
@@ -5,6 +6,14 @@ use lofty::{
 };
 use serde_json::Value;
 use std::io::BufReader;
+use std::path::Path;
+
+pub fn meta_str<'a>(meta_data: &'a Value, key: &str) -> Result<&'a str> {
+    meta_data
+        .get(key)
+        .and_then(|value| value.as_str())
+        .with_context(|| format!("missing or invalid '{}' in metadata", key))
+}
 
 pub fn process_artist(meta_data: &Value) -> String {
     let mut artists = String::new();
@@ -28,24 +37,22 @@ pub fn process_artist(meta_data: &Value) -> String {
     artists
 }
 
-pub fn add_meta_info(output_path: &str, meta_data: &Value, cover_data: Vec<u8>) {
-    let tag_type = match meta_data["format"].as_str().unwrap() {
+pub fn add_meta_info(output_path: &Path, meta_data: &Value, cover_data: Vec<u8>) -> Result<()> {
+    let format = meta_str(meta_data, "format")?;
+    let tag_type = match format {
         "flac" => TagType::VorbisComments,
         "mp3" => TagType::Id3v2,
-        _ => {
-            eprint!("仅支持flac和mp3格式文件添加元数据！");
-            return;
-        }
+        other => bail!("unsupported audio format for tags: {}", other),
     };
     let mut tag = Tag::new(tag_type);
 
-    let music_name = meta_data["musicName"].as_str().unwrap();
-    let album_name = meta_data["album"].as_str().unwrap();
-    let artist = process_artist(&meta_data);
-    let artist = artist.as_str();
+    let music_name = meta_str(meta_data, "musicName")?;
+    let album_name = meta_str(meta_data, "album")?;
+    let artist = process_artist(meta_data);
 
     let mut cover_buf = BufReader::new(cover_data.as_slice());
-    let mut cover = Picture::from_reader(&mut cover_buf).unwrap();
+    let mut cover = Picture::from_reader(&mut cover_buf)
+        .context("failed to decode cover image")?;
     cover.set_pic_type(PictureType::CoverFront);
 
     tag.push_picture(cover);
@@ -54,5 +61,7 @@ pub fn add_meta_info(output_path: &str, meta_data: &Value, cover_data: Vec<u8>) 
     tag.set_album(album_name.to_string());
 
     tag.save_to_path(output_path, WriteOptions::default())
-        .unwrap();
+        .with_context(|| format!("failed to write tags to {}", output_path.display()))?;
+
+    Ok(())
 }

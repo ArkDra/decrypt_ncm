@@ -1,8 +1,6 @@
 use std::io::{Cursor, Read, Seek};
 
-use crate::CORE_KEY;
-use crate::META_KEY;
-use crate::keybox::KeyBox;
+use anyhow::{bail, Context, Result};
 use aes::{
     Aes128,
     cipher::{BlockDecryptMut, KeyInit, block_padding::Pkcs7, generic_array::GenericArray},
@@ -10,74 +8,109 @@ use aes::{
 use base64::{Engine, prelude::BASE64_STANDARD};
 use serde_json::Value;
 
-pub fn aes_decrypt(mut data: Vec<u8>, key: &[u8]) -> Vec<u8> {
+use crate::keybox::KeyBox;
+use crate::{CORE_KEY, META_KEY};
+
+pub fn aes_decrypt(mut data: Vec<u8>, key: &[u8]) -> Result<Vec<u8>> {
     let key = GenericArray::from_slice(key);
     let cipher = ecb::Decryptor::<Aes128>::new(key);
-    let data = cipher.decrypt_padded_mut::<Pkcs7>(&mut data).unwrap();
-    data.to_vec()
+    match cipher.decrypt_padded_mut::<Pkcs7>(&mut data) {
+        Ok(data) => Ok(data.to_vec()),
+        Err(e) => Err(anyhow::anyhow!("aes decrypt failed (invalid padding or key): {:?}", e)),
+    }
 }
 
-pub fn process_encrypted_data(data: Vec<u8>) -> (Vec<u8>, Vec<u8>, serde_json::Value) {
+pub fn process_encrypted_data(data: Vec<u8>) -> Result<(Vec<u8>, Vec<u8>, Value)> {
     let mut cursor = Cursor::new(data);
 
-    // 处理文件头
     let mut header = [0u8; 8];
-    let _ = cursor.read_exact(&mut header);
+    cursor
+        .read_exact(&mut header)
+        .context("failed to read ncm header")?;
 
-    // 验证是否是NCM文件
     if header != [0x43, 0x54, 0x45, 0x4E, 0x46, 0x44, 0x41, 0x4D] {
-        panic!("无效的ncm文件！");
+        bail!("invalid ncm header (expected CTENFDAM)");
     }
 
-    // 处理密钥数据
-    cursor.seek(std::io::SeekFrom::Current(2)).unwrap();
+    cursor
+        .seek(std::io::SeekFrom::Current(2))
+        .context("failed to seek to key length")?;
 
     let mut key_length = [0u8; 4];
-    let _ = cursor.read_exact(&mut key_length);
-    let key_length = u32::from_le_bytes(key_length).try_into().unwrap();
+    cursor
+        .read_exact(&mut key_length)
+        .context("failed to read key length")?;
+    let key_length = usize::try_from(u32::from_le_bytes(key_length))
+        .context("invalid key length")?;
 
     let mut key_data = vec![0u8; key_length];
-    let _ = cursor.read_exact(&mut key_data);
+    cursor
+        .read_exact(&mut key_data)
+        .context("failed to read key data")?;
 
-    for i in 0..key_length {
-        key_data[i] ^= 0x64;
+    for byte in &mut key_data {
+        *byte ^= 0x64;
     }
 
-    let key_data = aes_decrypt(key_data, &CORE_KEY);
-    let key_box = KeyBox::new(&key_data[17..]);
+    let key_data = aes_decrypt(key_data, &CORE_KEY)
+        .context("failed to decrypt core key data")?;
+    if key_data.len() <= 17 {
+        bail!("decrypted key data too short: {}", key_data.len());
+    }
+    let key_box = KeyBox::new(&key_data[17..])
+        .context("failed to build key box")?;
 
-    // 处理元数据
     let mut meta_length = [0u8; 4];
-    let _ = cursor.read_exact(&mut meta_length);
-    let meta_length = u32::from_le_bytes(meta_length).try_into().unwrap();
+    cursor
+        .read_exact(&mut meta_length)
+        .context("failed to read meta length")?;
+    let meta_length = usize::try_from(u32::from_le_bytes(meta_length))
+        .context("invalid meta length")?;
 
     let mut meta_data = vec![0u8; meta_length];
-    let _ = cursor.read_exact(&mut meta_data);
+    cursor
+        .read_exact(&mut meta_data)
+        .context("failed to read meta data")?;
 
-    for i in 0..meta_length {
-        meta_data[i] ^= 0x63;
+    for byte in &mut meta_data {
+        *byte ^= 0x63;
     }
 
-    let meta_data = &meta_data[22..];
-    let meta_data = BASE64_STANDARD.decode(meta_data).unwrap();
-    let meta_data = aes_decrypt(meta_data, &META_KEY);
-    let meta_data = &meta_data[6..];
-    let meta_data: Value = serde_json::from_slice(&meta_data).unwrap();
+    if meta_data.len() < 22 {
+        bail!("meta data too short for base64 payload: {}", meta_data.len());
+    }
+    let meta_data = BASE64_STANDARD
+        .decode(&meta_data[22..])
+        .context("failed to base64 decode meta data")?;
+    let meta_data = aes_decrypt(meta_data, &META_KEY)
+        .context("failed to decrypt meta data")?;
+    if meta_data.len() < 6 {
+        bail!("meta data too short for json payload: {}", meta_data.len());
+    }
+    let meta_data: Value = serde_json::from_slice(&meta_data[6..])
+        .context("failed to parse meta json")?;
 
-    // 处理封面数据
-    cursor.seek(std::io::SeekFrom::Current(9)).unwrap();
+    cursor
+        .seek(std::io::SeekFrom::Current(9))
+        .context("failed to seek to cover length")?;
 
     let mut cover_length = [0u8; 4];
-    let _ = cursor.read_exact(&mut cover_length);
-    let cover_length = u32::from_le_bytes(cover_length).try_into().unwrap();
+    cursor
+        .read_exact(&mut cover_length)
+        .context("failed to read cover length")?;
+    let cover_length = usize::try_from(u32::from_le_bytes(cover_length))
+        .context("invalid cover length")?;
 
     let mut cover_data = vec![0u8; cover_length];
-    let _ = cursor.read_exact(&mut cover_data);
+    cursor
+        .read_exact(&mut cover_data)
+        .context("failed to read cover data")?;
 
-    // 处理音乐数据
     let mut music_data = Vec::new();
-    let _ = cursor.read_to_end(&mut music_data);
+    cursor
+        .read_to_end(&mut music_data)
+        .context("failed to read music data")?;
     let music_data = key_box.apply_keystream(music_data);
 
-    (music_data, cover_data, meta_data)
+    Ok((music_data, cover_data, meta_data))
 }
