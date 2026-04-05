@@ -1,7 +1,5 @@
 # decrypt_ncm
 
-A tool for decrypting NCM files - a solution for converting encrypted NCM audio files to FLAC format.
-
 ## 项目概述
 
 decrypt_ncm 是一个用于解密网易云音乐 NCM 文件的工具，将加密的 NCM 文件转换为FLAC音频文件。
@@ -14,7 +12,7 @@ decrypt_ncm 是一个用于解密网易云音乐 NCM 文件的工具，将加密
 
 ## 构建与运行
 
-### 环境要求
+### 构建环境要求
 
 - Rust 工具链
 
@@ -31,10 +29,7 @@ cargo build --release
 ### 使用方法
 
 ```bash
-# 运行程序并指定 NCM 文件路径
-cargo run <ncm_file_path>
-
-# 或者运行已构建的二进制文件
+# 运行已构建的二进制文件
 ./target/release/decrypt_ncm <ncm_file_path>
 ```
 
