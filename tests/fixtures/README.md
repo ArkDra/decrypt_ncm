@@ -14,3 +14,7 @@ reimplementing the NCM cipher or requiring either executable.
 - `mismatched-format.ncm`: FLAC audio with metadata declaring `mp3`.
 - `bad-cover.ncm`: valid FLAC audio and metadata with an invalid, nonempty cover,
   provoking a tagging error after the temporary audio file has been written.
+- `stream-cycle.bin`: a fixed 256-byte ciphertext vector for plaintext bytes
+  `0..=255`, using the same synthetic core key as `song.ncm`. Stream regression
+  tests repeat this vector to exercise chunk boundaries without implementing
+  encryption or storing a large audio fixture.
