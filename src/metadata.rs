@@ -7,7 +7,7 @@ use lofty::{
     tag::{Accessor, Tag, TagExt},
 };
 use serde_json::Value;
-use std::io::{BufReader, Cursor};
+use std::io::{BufReader, Read, Seek};
 use std::path::Path;
 
 pub fn meta_str<'a>(meta_data: &'a Value, key: &str) -> Result<&'a str> {
@@ -25,8 +25,8 @@ fn audio_format(meta_data: &Value) -> Result<FileType> {
     }
 }
 
-pub fn normalize_metadata(
-    music_data: &[u8],
+pub fn normalize_metadata<R: Read + Seek>(
+    audio: &mut R,
     meta_data: &mut Value,
     input_path: &Path,
 ) -> Result<()> {
@@ -36,7 +36,7 @@ pub fn normalize_metadata(
         Some(Value::String(format)) if format.is_empty() => None,
         Some(_) => Some(audio_format(meta_data)?),
     };
-    let actual = Probe::new(Cursor::new(music_data))
+    let actual = Probe::new(audio)
         .guess_file_type()
         .context("failed to detect audio format")?
         .file_type()
