@@ -37,7 +37,12 @@ cargo build --release
 
 # 显式允许替换已有输出文件
 ./target/release/decrypt_ncm --overwrite <file_or_directory>
+
+# 限制目录批量转换的并发数
+./target/release/decrypt_ncm --jobs 2 <directory_path>
 ```
+
+`--jobs` 必须为正整数，默认同时处理最多 2 个文件。
 
 ### 文件保护
 

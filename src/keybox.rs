@@ -1,10 +1,7 @@
 use anyhow::{Result, bail};
-use rayon::prelude::*;
-
-const CHUNK_SIZE: usize = 16384;
 
 pub struct KeyBox {
-    box_data: [u8; 256],
+    keystream: [u8; 256],
 }
 
 impl KeyBox {
@@ -27,23 +24,19 @@ impl KeyBox {
             last_byte = c;
         }
 
-        Ok(KeyBox { box_data: key_box })
+        // The NCM keystream repeats every 256 bytes.
+        let keystream = std::array::from_fn(|i| {
+            let j = (i + 1) & 0xFF;
+            let value = key_box[j].wrapping_add(key_box[(key_box[j] as usize + j) & 0xFF]);
+            key_box[value as usize]
+        });
+        Ok(KeyBox { keystream })
     }
 
-    pub fn apply_keystream(&self, mut data: Vec<u8>) -> Vec<u8> {
-        data.par_chunks_mut(CHUNK_SIZE)
-            .enumerate()
-            .for_each(|(chunk_idx, chunk)| {
-                let global_offset = chunk_idx * CHUNK_SIZE;
-                chunk.iter_mut().enumerate().for_each(|(local_idx, byte)| {
-                    let global_idx = global_offset + local_idx;
-                    let j = (global_idx + 1) & 0xFF;
-                    let value = self.box_data[j]
-                        .wrapping_add(self.box_data[(self.box_data[j] as usize + j) & 0xFF]);
-                    *byte ^= self.box_data[value as usize & 0xFF];
-                });
-            });
-
-        data
+    pub fn apply_keystream(&self, data: &mut [u8], offset: u64) {
+        let start = (offset & 0xFF) as usize;
+        for (index, byte) in data.iter_mut().enumerate() {
+            *byte ^= self.keystream[(start + index) & 0xFF];
+        }
     }
 }

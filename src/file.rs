@@ -1,9 +1,11 @@
 use anyhow::{Context, Result, bail};
 use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::{BufReader, Read, Write};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+
+pub const BUFFER_SIZE: usize = 64 * 1024;
 
 pub struct OutputWriter {
     overwrite: bool,
@@ -22,7 +24,7 @@ impl OutputWriter {
         &self,
         input_path: &Path,
         output_path: &Path,
-        data: &[u8],
+        write_audio: impl FnOnce(&mut File) -> Result<()>,
         finalize: impl FnOnce(&Path) -> Result<()>,
     ) -> Result<()> {
         self.check_destination(input_path, output_path)?;
@@ -34,9 +36,7 @@ impl OutputWriter {
             .prefix(".decrypt_ncm-")
             .tempfile_in(parent)
             .with_context(|| format!("failed to create temporary file in {}", parent.display()))?;
-        temporary
-            .write_all(data)
-            .context("failed to write temporary audio file")?;
+        write_audio(temporary.as_file_mut()).context("failed to write temporary audio file")?;
         finalize(temporary.path())?;
         temporary
             .as_file()
@@ -127,12 +127,8 @@ pub fn is_ncm_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-pub fn read_file(file_path: &Path) -> Result<Vec<u8>> {
+pub fn open_file(file_path: &Path) -> Result<BufReader<File>> {
     let file = File::open(file_path)
         .with_context(|| format!("failed to open file: {}", file_path.display()))?;
-    let mut buf = BufReader::new(file);
-    let mut data = Vec::new();
-    buf.read_to_end(&mut data)
-        .with_context(|| format!("failed to read file: {}", file_path.display()))?;
-    Ok(data)
+    Ok(BufReader::with_capacity(BUFFER_SIZE, file))
 }
