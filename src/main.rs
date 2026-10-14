@@ -1,4 +1,4 @@
-﻿mod decrypt;
+mod decrypt;
 mod file;
 mod keybox;
 mod metadata;
@@ -7,11 +7,11 @@ use crate::decrypt::*;
 use crate::file::*;
 use crate::metadata::*;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use rayon::iter::IntoParallelRefIterator;
 use rayon::prelude::ParallelIterator;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const CORE_KEY: [u8; 16] = [
     0x68, 0x7a, 0x48, 0x52, 0x41, 0x6d, 0x73, 0x6f, 0x35, 0x6b, 0x49, 0x6e, 0x62, 0x61, 0x78, 0x57,
@@ -29,8 +29,8 @@ fn sanitize_filename(name: &str) -> String {
         .collect()
 }
 
-fn process_input(input_path: &str) -> Result<()> {
-    let path = Path::new(input_path);
+fn process_input(path: &Path, overwrite: bool) -> Result<()> {
+    let output_writer = OutputWriter::new(overwrite);
 
     if !path.exists() {
         bail!("path does not exist: {}", path.display());
@@ -38,7 +38,7 @@ fn process_input(input_path: &str) -> Result<()> {
 
     if path.is_file() {
         if is_ncm_file(path) {
-            decrypt_file(path)
+            decrypt_file(path, &output_writer)
                 .with_context(|| format!("failed to decrypt {}", path.display()))?;
         } else {
             bail!("file is not .ncm: {}", path.display());
@@ -60,7 +60,7 @@ fn process_input(input_path: &str) -> Result<()> {
         let errors: Vec<String> = ncm_files
             .par_iter()
             .filter_map(|file_path| {
-                decrypt_file(file_path)
+                decrypt_file(file_path, &output_writer)
                     .with_context(|| format!("failed to decrypt {}", file_path.display()))
                     .err()
                     .map(|err| format!("{}: {:#}", file_path.display(), err))
@@ -81,35 +81,51 @@ fn process_input(input_path: &str) -> Result<()> {
     Ok(())
 }
 
-fn decrypt_file(file_path: &Path) -> Result<()> {
-    let file_data = read_file(file_path)
-        .with_context(|| format!("failed to read {}", file_path.display()))?;
+fn decrypt_file(file_path: &Path, output_writer: &OutputWriter) -> Result<()> {
+    let file_data =
+        read_file(file_path).with_context(|| format!("failed to read {}", file_path.display()))?;
 
-    let (music_data, cover_data, meta_data) = process_encrypted_data(file_data)
-        .with_context(|| format!("failed to process encrypted data for {}", file_path.display()))?;
+    let (music_data, cover_data, meta_data) =
+        process_encrypted_data(file_data).with_context(|| {
+            format!(
+                "failed to process encrypted data for {}",
+                file_path.display()
+            )
+        })?;
 
+    validate_audio_format(&music_data, &meta_data)?;
     let music_name = meta_str(&meta_data, "musicName")?;
     let ext = meta_str(&meta_data, "format")?;
     let artists = process_artist(&meta_data);
     let file_name = sanitize_filename(&format!("{} - {}.{}", music_name, artists, ext));
     let output_path = file_path.with_file_name(file_name);
 
-    write_file(&output_path, &music_data)
-        .with_context(|| format!("failed to write {}", output_path.display()))?;
-    add_meta_info(&output_path, &meta_data, cover_data)
-        .with_context(|| format!("failed to write tags for {}", output_path.display()))?;
+    output_writer.write(file_path, &output_path, &music_data, |temporary_path| {
+        add_meta_info(temporary_path, &meta_data, cover_data)
+            .with_context(|| format!("failed to write tags for {}", output_path.display()))
+    })?;
 
     Ok(())
 }
 
 fn run() -> Result<()> {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
-        bail!("usage: decrypt_ncm <file_or_directory>");
+    let usage = "usage: decrypt_ncm [--overwrite] <file_or_directory>";
+    let mut overwrite = false;
+    let mut input_path = None;
+    let mut positional_only = false;
+    for arg in std::env::args_os().skip(1) {
+        if !positional_only && arg == "--overwrite" {
+            overwrite = true;
+        } else if !positional_only && arg == "--" {
+            positional_only = true;
+        } else if !positional_only && arg.to_string_lossy().starts_with('-') {
+            bail!("unknown option: {}\n{}", arg.to_string_lossy(), usage);
+        } else if input_path.replace(PathBuf::from(arg)).is_some() {
+            bail!("expected one input path\n{}", usage);
+        }
     }
-
-    let input_path = &args[1];
-    process_input(input_path)
+    let input_path = input_path.context(usage)?;
+    process_input(&input_path, overwrite)
 }
 
 fn main() {

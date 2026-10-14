@@ -1,11 +1,13 @@
-﻿use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use lofty::{
     config::WriteOptions,
+    file::FileType,
     picture::{Picture, PictureType},
-    tag::{Accessor, Tag, TagExt, TagType},
+    probe::Probe,
+    tag::{Accessor, Tag, TagExt},
 };
 use serde_json::Value;
-use std::io::BufReader;
+use std::io::{BufReader, Cursor};
 use std::path::Path;
 
 pub fn meta_str<'a>(meta_data: &'a Value, key: &str) -> Result<&'a str> {
@@ -13,6 +15,31 @@ pub fn meta_str<'a>(meta_data: &'a Value, key: &str) -> Result<&'a str> {
         .get(key)
         .and_then(|value| value.as_str())
         .with_context(|| format!("missing or invalid '{}' in metadata", key))
+}
+
+fn audio_format(meta_data: &Value) -> Result<FileType> {
+    match meta_str(meta_data, "format")? {
+        "flac" => Ok(FileType::Flac),
+        "mp3" => Ok(FileType::Mpeg),
+        other => bail!("unsupported audio format: {}", other),
+    }
+}
+
+pub fn validate_audio_format(music_data: &[u8], meta_data: &Value) -> Result<()> {
+    let expected = audio_format(meta_data)?;
+    let actual = Probe::new(Cursor::new(music_data))
+        .guess_file_type()
+        .context("failed to detect audio format")?
+        .file_type()
+        .context("unrecognized audio format")?;
+    if actual != expected {
+        bail!(
+            "audio format does not match metadata: expected {:?}, detected {:?}",
+            expected,
+            actual
+        );
+    }
+    Ok(())
 }
 
 pub fn process_artist(meta_data: &Value) -> String {
@@ -38,12 +65,7 @@ pub fn process_artist(meta_data: &Value) -> String {
 }
 
 pub fn add_meta_info(output_path: &Path, meta_data: &Value, cover_data: Vec<u8>) -> Result<()> {
-    let format = meta_str(meta_data, "format")?;
-    let tag_type = match format {
-        "flac" => TagType::VorbisComments,
-        "mp3" => TagType::Id3v2,
-        other => bail!("unsupported audio format for tags: {}", other),
-    };
+    let tag_type = audio_format(meta_data)?.primary_tag_type();
     let mut tag = Tag::new(tag_type);
 
     let music_name = meta_str(meta_data, "musicName")?;
@@ -51,8 +73,7 @@ pub fn add_meta_info(output_path: &Path, meta_data: &Value, cover_data: Vec<u8>)
     let artist = process_artist(meta_data);
 
     let mut cover_buf = BufReader::new(cover_data.as_slice());
-    let mut cover = Picture::from_reader(&mut cover_buf)
-        .context("failed to decode cover image")?;
+    let mut cover = Picture::from_reader(&mut cover_buf).context("failed to decode cover image")?;
     cover.set_pic_type(PictureType::CoverFront);
 
     tag.push_picture(cover);
