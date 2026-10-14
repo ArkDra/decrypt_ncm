@@ -1,3 +1,4 @@
+mod cli;
 mod decrypt;
 mod file;
 mod keybox;
@@ -8,6 +9,7 @@ use crate::file::*;
 use crate::metadata::*;
 
 use anyhow::{Context, Result, bail};
+use clap::Parser;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::prelude::ParallelIterator;
 use std::fs;
@@ -64,68 +66,112 @@ fn output_filename(title: &str, artists: &str, extension: &str) -> String {
     format!("{name}.{extension}")
 }
 
-fn process_input(path: &Path, overwrite: bool, jobs: usize) -> Result<()> {
-    let output_writer = OutputWriter::new(overwrite);
+fn process_input(args: &cli::Args) -> Result<()> {
+    let path = &args.input;
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("failed to inspect input {}", path.display()))?;
+    let mut ncm_files = Vec::new();
+    let mut skipped = 0;
+    let mut errors = Vec::new();
 
-    if !path.exists() {
-        bail!("path does not exist: {}", path.display());
-    }
-
-    if path.is_file() {
-        if is_ncm_file(path) {
-            decrypt_file(path, &output_writer)
-                .with_context(|| format!("failed to decrypt {}", path.display()))?;
-        } else {
+    if metadata.is_file() {
+        if !is_ncm_file(path) {
             bail!("file is not .ncm: {}", path.display());
         }
-    } else if path.is_dir() {
+        ncm_files.push(path.clone());
+    } else if metadata.is_dir() {
         let entries = fs::read_dir(path)
             .with_context(|| format!("failed to read directory {}", path.display()))?;
-        let mut ncm_files = Vec::new();
-
         for entry in entries {
-            let entry = entry
-                .with_context(|| format!("failed to read directory entry in {}", path.display()))?;
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    errors.push(format!(
+                        "failed to read directory entry in {}: {}",
+                        path.display(),
+                        err
+                    ));
+                    continue;
+                }
+            };
             let file_path = entry.path();
-            if is_ncm_file(&file_path) {
-                ncm_files.push(file_path);
+            match entry.file_type() {
+                Ok(file_type) if file_type.is_file() && is_ncm_file(&file_path) => {
+                    ncm_files.push(file_path);
+                }
+                Ok(_) => skipped += 1,
+                Err(err) => errors.push(format!(
+                    "failed to inspect directory entry {}: {}",
+                    file_path.display(),
+                    err
+                )),
             }
-        }
-
-        if ncm_files.is_empty() {
-            return Ok(());
-        }
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(jobs.min(ncm_files.len()))
-            .build()
-            .context("failed to create file conversion thread pool")?;
-        let errors: Vec<String> = pool.install(|| {
-            ncm_files
-                .par_iter()
-                .filter_map(|file_path| {
-                    decrypt_file(file_path, &output_writer)
-                        .with_context(|| format!("failed to decrypt {}", file_path.display()))
-                        .err()
-                        .map(|err| format!("{}: {:#}", file_path.display(), err))
-                })
-                .collect()
-        });
-
-        if !errors.is_empty() {
-            bail!(
-                "failed to decrypt {} file(s):\n{}",
-                errors.len(),
-                errors.join("\n")
-            );
         }
     } else {
         bail!("path is not a file or directory: {}", path.display());
     }
 
+    let mut succeeded = 0;
+    if ncm_files.is_empty() {
+        println!("No regular .ncm files found in {}.", path.display());
+    } else {
+        ncm_files.sort();
+        let output_dir = prepare_output_dir(args.output_dir.as_deref())?;
+        let output_writer = OutputWriter::new(args.overwrite);
+        let convert = |file_path: &PathBuf| {
+            decrypt_file(file_path, output_dir.as_deref(), &output_writer)
+                .with_context(|| format!("failed to decrypt {}", file_path.display()))
+                .err()
+                .map(|err| format!("{}: {:#}", file_path.display(), err))
+        };
+        let conversion_errors: Vec<String> = if ncm_files.len() == 1 {
+            ncm_files.iter().filter_map(convert).collect()
+        } else {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(args.jobs.get().min(ncm_files.len()))
+                .build()
+                .context("failed to create file conversion thread pool")?;
+            pool.install(|| ncm_files.par_iter().filter_map(convert).collect())
+        };
+        succeeded = ncm_files.len() - conversion_errors.len();
+        errors.extend(conversion_errors);
+    }
+
+    println!(
+        "Summary: {} succeeded, {} failed, {} skipped",
+        succeeded,
+        errors.len(),
+        skipped
+    );
+    if !errors.is_empty() {
+        bail!(
+            "failed to decrypt {} file(s):\n{}",
+            errors.len(),
+            errors.join("\n")
+        );
+    }
+
     Ok(())
 }
 
-fn decrypt_file(file_path: &Path, output_writer: &OutputWriter) -> Result<()> {
+fn prepare_output_dir(directory: Option<&Path>) -> Result<Option<PathBuf>> {
+    directory
+        .map(|directory| {
+            fs::create_dir_all(directory).with_context(|| {
+                format!("failed to create output directory {}", directory.display())
+            })?;
+            fs::canonicalize(directory).with_context(|| {
+                format!("failed to resolve output directory {}", directory.display())
+            })
+        })
+        .transpose()
+}
+
+fn decrypt_file(
+    file_path: &Path,
+    output_dir: Option<&Path>,
+    output_writer: &OutputWriter,
+) -> Result<()> {
     let reader = open_file(file_path)?;
 
     let (mut audio, cover_data, mut meta_data) =
@@ -144,7 +190,10 @@ fn decrypt_file(file_path: &Path, output_writer: &OutputWriter) -> Result<()> {
     let ext = meta_str(&meta_data, "format")?;
     let artists = process_artist(&meta_data);
     let file_name = output_filename(music_name, &artists, ext);
-    let output_path = file_path.with_file_name(file_name);
+    let output_path = match output_dir {
+        Some(directory) => directory.join(file_name),
+        None => file_path.with_file_name(file_name),
+    };
 
     output_writer.write(
         file_path,
@@ -165,35 +214,7 @@ fn decrypt_file(file_path: &Path, output_writer: &OutputWriter) -> Result<()> {
 }
 
 fn run() -> Result<()> {
-    let usage = "usage: decrypt_ncm [--overwrite] [--jobs <count>] <file_or_directory>";
-    let mut overwrite = false;
-    let mut jobs = 2;
-    let mut input_path = None;
-    let mut positional_only = false;
-    let mut args = std::env::args_os().skip(1);
-    while let Some(arg) = args.next() {
-        if !positional_only && arg == "--overwrite" {
-            overwrite = true;
-        } else if !positional_only && arg == "--jobs" {
-            let count = args.next().context("--jobs requires a positive integer")?;
-            jobs = count
-                .to_str()
-                .context("--jobs requires a positive integer")?
-                .parse::<usize>()
-                .context("--jobs requires a positive integer")?;
-            if jobs == 0 {
-                bail!("--jobs requires a positive integer");
-            }
-        } else if !positional_only && arg == "--" {
-            positional_only = true;
-        } else if !positional_only && arg.to_string_lossy().starts_with('-') {
-            bail!("unknown option: {}\n{}", arg.to_string_lossy(), usage);
-        } else if input_path.replace(PathBuf::from(arg)).is_some() {
-            bail!("expected one input path\n{}", usage);
-        }
-    }
-    let input_path = input_path.context(usage)?;
-    process_input(&input_path, overwrite, jobs)
+    process_input(&cli::Args::parse())
 }
 
 fn main() {
