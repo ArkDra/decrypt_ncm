@@ -31,7 +31,18 @@ cargo build --release
 ```bash
 # 运行已构建的二进制文件
 ./target/release/decrypt_ncm <ncm_file_path>
+
+# 批量处理目录中的 NCM 文件
+./target/release/decrypt_ncm <directory_path>
+
+# 显式允许替换已有输出文件
+./target/release/decrypt_ncm --overwrite <file_or_directory>
 ```
+
+### 文件保护
+
+- 默认不覆盖已有输出文件；需要替换时使用 `--overwrite`。
+- 输出格式必须为 MP3 或 FLAC，并且与解密后的音频内容一致。
 
 ## 许可证
 
