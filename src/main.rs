@@ -20,13 +20,47 @@ const META_KEY: [u8; 16] = [
     0x23, 0x31, 0x34, 0x6C, 0x6A, 0x6B, 0x5F, 0x21, 0x5C, 0x5D, 0x26, 0x30, 0x55, 0x3C, 0x27, 0x28,
 ];
 
-fn sanitize_filename(name: &str) -> String {
-    name.chars()
-        .map(|c| match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-            _ => c,
+fn output_filename(title: &str, artists: &str, extension: &str) -> String {
+    let name = if artists.trim().is_empty() {
+        title.to_string()
+    } else {
+        format!("{title} - {artists}")
+    };
+    let mut name: String = name
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                '_'
+            } else {
+                c
+            }
         })
-        .collect()
+        .collect();
+    let device_name = name
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    if matches!(device_name.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ["COM", "LPT"].iter().any(|prefix| {
+            device_name.strip_prefix(prefix).is_some_and(|suffix| {
+                (suffix.len() == 1 && matches!(suffix.as_bytes()[0], b'1'..=b'9'))
+                    || matches!(suffix, "¹" | "²" | "³")
+            })
+        })
+    {
+        name.insert(0, '_');
+    }
+    // Leave room for the extension and stay below common 255-byte component limits.
+    let mut end = name.len().min(240 - extension.len() - 1);
+    while !name.is_char_boundary(end) {
+        end -= 1;
+    }
+    name.truncate(end);
+    let name = name.trim_end_matches([' ', '.']);
+    let name = if name.is_empty() { "Untitled" } else { name };
+    format!("{name}.{extension}")
 }
 
 fn process_input(path: &Path, overwrite: bool) -> Result<()> {
@@ -85,7 +119,7 @@ fn decrypt_file(file_path: &Path, output_writer: &OutputWriter) -> Result<()> {
     let file_data =
         read_file(file_path).with_context(|| format!("failed to read {}", file_path.display()))?;
 
-    let (music_data, cover_data, meta_data) =
+    let (music_data, cover_data, mut meta_data) =
         process_encrypted_data(file_data).with_context(|| {
             format!(
                 "failed to process encrypted data for {}",
@@ -93,11 +127,11 @@ fn decrypt_file(file_path: &Path, output_writer: &OutputWriter) -> Result<()> {
             )
         })?;
 
-    validate_audio_format(&music_data, &meta_data)?;
+    normalize_metadata(&music_data, &mut meta_data, file_path)?;
     let music_name = meta_str(&meta_data, "musicName")?;
     let ext = meta_str(&meta_data, "format")?;
     let artists = process_artist(&meta_data);
-    let file_name = sanitize_filename(&format!("{} - {}.{}", music_name, artists, ext));
+    let file_name = output_filename(music_name, &artists, ext);
     let output_path = file_path.with_file_name(file_name);
 
     output_writer.write(file_path, &output_path, &music_data, |temporary_path| {
