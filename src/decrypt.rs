@@ -229,3 +229,6 @@ pub fn process_encrypted_data<R: Read + Seek>(
     };
     Ok((audio, cover_data, meta_data))
 }
+
+#[cfg(test)]
+mod tests;
