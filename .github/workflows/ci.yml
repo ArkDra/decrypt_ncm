@@ -28,3 +28,15 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Test
         run: cargo test --locked
+
+  msrv:
+    name: Minimum Rust (1.88.0)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.88.0"
+      - name: Test on minimum Rust version
+        run: cargo test --locked
