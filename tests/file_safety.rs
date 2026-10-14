@@ -105,28 +105,22 @@ fn invalid_formats_never_replace_source_or_output() {
 
 #[test]
 fn input_aliases_cannot_be_overwritten() {
-    for alias_type in [
-        "hard-link",
-        #[cfg(unix)]
-        "symlink",
-    ] {
+    let check_alias = |create_alias: fn(&Path, &Path) -> std::io::Result<()>| {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("input.ncm");
         let output = directory.path().join(OUTPUT_NAME);
         fs::write(&source, SONG).unwrap();
-        if alias_type == "hard-link" {
-            fs::hard_link(&source, &output).unwrap();
-        } else {
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(&source, &output).unwrap();
-        }
+        create_alias(&source, &output).unwrap();
 
         assert_failure(&run(&source, true), "output refers to the input file");
         assert_eq!(fs::read(&source).unwrap(), SONG);
         assert_eq!(fs::read(&output).unwrap(), SONG);
         assert!(same_file::is_same_file(&source, &output).unwrap());
         assert_files(directory.path(), &["input.ncm", OUTPUT_NAME]);
-    }
+    };
+    check_alias(|source, output| fs::hard_link(source, output));
+    #[cfg(unix)]
+    check_alias(|source, output| std::os::unix::fs::symlink(source, output));
 }
 
 #[test]
